@@ -25,6 +25,7 @@ type allFetchFlags struct {
 	version     string
 	bundleURL   string
 	upstreamURL string
+	recursive   bool
 }
 
 var allFlags allFetchFlags
@@ -106,10 +107,11 @@ func init() {
 
 	fetchUpdateCmd.Flags().StringVarP(&allFlags.version, "version", "v", "", "version from which to pull data")
 	fetchUpdateCmd.Flags().StringVarP(&allFlags.upstreamURL, "upstreamurl", "u", "", "URL from which to pull update metadata")
+	fetchUpdateCmd.Flags().BoolVarP(&allFlags.recursive, "recursive", "r", false, "recursively fetch all content referenced in update metadata")
 }
 
 func runFetchAllCmd(cmd *cobra.Command, args []string) {
-	u, err := diva.GetUpstreamInfo(conf, allFlags.upstreamURL, allFlags.version)
+	u, err := diva.GetUpstreamInfo(conf, allFlags.upstreamURL, allFlags.version, allFlags.recursive)
 	if err != nil {
 		helpers.Fail(err)
 	}
@@ -138,7 +140,7 @@ func runFetchBundlesCmd(cmd *cobra.Command, args []string) {
 }
 
 func runFetchRepoCmd(cmd *cobra.Command, args []string) {
-	u, err := diva.GetUpstreamInfo(conf, allFlags.upstreamURL, allFlags.version)
+	u, err := diva.GetUpstreamInfo(conf, allFlags.upstreamURL, allFlags.version, allFlags.recursive)
 	if err != nil {
 		helpers.Fail(err)
 	}
@@ -150,12 +152,17 @@ func runFetchRepoCmd(cmd *cobra.Command, args []string) {
 }
 
 func runFetchUpdateCmd(cmd *cobra.Command, args []string) {
-	u, err := diva.GetUpstreamInfo(conf, allFlags.upstreamURL, allFlags.version)
+	u, err := diva.GetUpstreamInfo(conf, allFlags.upstreamURL, allFlags.version, allFlags.recursive)
 	if err != nil {
 		helpers.Fail(err)
 	}
 
 	err = diva.FetchUpdate(u)
+	if err != nil {
+		helpers.Fail(err)
+	}
+
+	err = diva.FetchUpdateFiles(u)
 	if err != nil {
 		helpers.Fail(err)
 	}

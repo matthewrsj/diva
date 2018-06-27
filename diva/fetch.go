@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/clearlinux/diva/internal/config"
 	"github.com/clearlinux/diva/internal/helpers"
@@ -32,12 +33,13 @@ import (
 // cache location
 type UInfo struct {
 	Ver      string
+	MinVer   uint
 	URL      string
 	CacheLoc string
 }
 
 // GetUpstreamInfo populates the UInfo struct and returns it
-func GetUpstreamInfo(conf *config.Config, upstreamURL string, version string) (UInfo, error) {
+func GetUpstreamInfo(conf *config.Config, upstreamURL string, version string, recursive bool) (UInfo, error) {
 	u := UInfo{}
 	if upstreamURL == "" {
 		u.URL = conf.UpstreamURL
@@ -66,6 +68,11 @@ func GetUpstreamInfo(conf *config.Config, upstreamURL string, version string) (U
 	u.Ver = strings.Trim(string(body), "\n")
 	// no support yet for modifying cache location via commandline
 	u.CacheLoc = conf.Paths.CacheLocation
+
+	if !recursive {
+		u.MinVer = u.Ver
+	}
+
 	return u, err
 }
 
@@ -115,7 +122,7 @@ func GetLatestBundles(conf *config.Config, url string) error {
 
 // FetchUpdate downloads manifests from the u.URL server
 func FetchUpdate(u UInfo) error {
-	helpers.PrintBegin("fetching manifests from %s at version %s", u.URL, u.Ver)
+	helpers.PrintBegin("fetching manifests from %s at version %v", u.URL, u.Ver)
 	baseCache := filepath.Join(u.CacheLoc, "update")
 	outMoM := filepath.Join(baseCache, u.Ver, "Manifest.MoM")
 	err := helpers.DownloadManifest(u.URL, u.Ver, "MoM", outMoM)
@@ -128,13 +135,116 @@ func FetchUpdate(u UInfo) error {
 	}
 
 	for i := range mom.Files {
-		ver := fmt.Sprint(mom.Files[i].Version)
-		outMan := filepath.Join(baseCache, ver, "Manifest."+mom.Files[i].Name)
-		err := helpers.DownloadManifest(u.URL, ver, mom.Files[i].Name, outMan)
+		ver := uint(mom.Files[i].Version)
+		if ver < u.MinVer {
+			continue
+		}
+		outMan := filepath.Join(baseCache, fmt.Sprint(ver), "Manifest."+mom.Files[i].Name)
+		_, err := helpers.DownloadManifest(u.URL, fmt.Sprint(ver), mom.Files[i].Name, outMan)
 		if err != nil {
 			return err
 		}
 	}
 	helpers.PrintComplete("manifests cached at %s", baseCache)
+	return nil
+}
+
+type finfo struct {
+	out string
+	url string
+	err error
+}
+
+func getAllFiles(u UInfo) (map[string]finfo, error) {
+	dlFiles := make(map[string]finfo)
+	baseCache := filepath.Join(u.CacheLoc, "update")
+	outMoM := filepath.Join(baseCache, fmt.Sprint(u.Ver), "Manifest.MoM")
+	mom, err := helpers.DownloadManifest(u.URL, u.Ver, "MoM", outMoM)
+	if err != nil {
+		return nil, err
+	}
+
+	// this is fast, no need to parallelize
+	for i := range mom.Files {
+		mv := uint(mom.Files[i].Version)
+		if mv < u.MinVer {
+			continue
+		}
+		baseCache := filepath.Join(u.CacheLoc, "update")
+		outMan := filepath.Join(baseCache, fmt.Sprint(mv), "Manifest."+mom.Files[i].Name)
+		m, err := helpers.DownloadManifest(u.URL, mv, mom.Files[i].Name, outMan)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range m.Files {
+			if uint(f.Version) < u.MinVer || !f.Present() {
+				continue
+			}
+
+			fURL := fmt.Sprintf("%s/update/%d/files/%s.tar", u.URL, f.Version, f.Hash)
+			fOut := filepath.Join(baseCache, fmt.Sprint(f.Version), "files", f.Hash.String()+".tar")
+			fi := finfo{out: fOut, url: fURL}
+			dlFiles[fOut] = fi
+		}
+	}
+	return dlFiles, nil
+}
+
+// FetchUpdateFiles downloads relevant files for u.Ver from u.URL
+func FetchUpdateFiles(u UInfo) error {
+	helpers.PrintBegin("fetching files from %s at version %d", u.URL, u.Ver)
+	dlFiles, err := getAllFiles(u)
+	if err != nil {
+		return err
+	}
+
+	var wg sync.WaitGroup
+	nworkers := 8
+	wg.Add(nworkers)
+	fChan := make(chan finfo)
+	errChan := make(chan error)
+
+	retried := false
+	for i := 0; i < nworkers; i++ {
+		go func() {
+			defer wg.Done()
+			for f := range fChan {
+				// we already have this file cached
+				if _, err := os.Lstat(strings.TrimSuffix(f.out, ".tar")); err == nil {
+					continue
+				}
+
+				f.err = helpers.TarExtractURL(f.url, f.out)
+				err := os.Remove(f.out)
+				if err != nil {
+					fmt.Println(err)
+				}
+
+				if f.err != nil {
+					fmt.Println(f.err)
+					if !retried {
+						fmt.Println("retrying download...")
+						retried = true
+						i--
+					} else {
+						fmt.Println("unable to download, continuing...")
+						errChan <- f.err
+					}
+				}
+			}
+		}()
+	}
+
+	for f := range dlFiles {
+		fChan <- dlFiles[f]
+	}
+	close(fChan)
+	wg.Wait()
+
+	if len(errChan) > 0 {
+		helpers.PrintComplete("errors downloading %d files", len(errChan))
+	} else {
+		helpers.PrintComplete("files cached at %s", filepath.Join(u.CacheLoc, "update"))
+	}
 	return nil
 }

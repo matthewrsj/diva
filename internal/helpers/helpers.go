@@ -20,10 +20,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -73,7 +75,18 @@ func Download(url, filename string) error {
 	}
 
 	// move tempfile to final now that everything else has succeeded
-	return os.Rename(tmpFile, filename)
+	return renameIfNE(tmpFile, filename)
+}
+
+func renameIfNE(src, dst string) error {
+	err := os.Link(src, dst)
+	if err != nil {
+		if !os.IsExist(err) {
+			return err
+		}
+	}
+
+	return os.Remove(src)
 }
 
 // DownloadFile downloads from url and extracts the file if necessary using the
@@ -192,7 +205,7 @@ func DownloadManifest(baseURL string, version string, component, outF string) er
 	if err != nil {
 		return err
 	}
-	err = tarExtractURL(url, outF)
+	err = TarExtractURL(url, outF)
 	if err != nil {
 		return err
 	}
@@ -200,8 +213,13 @@ func DownloadManifest(baseURL string, version string, component, outF string) er
 	return nil
 }
 
-func tarExtractURL(url, target string) error {
-	if err := Download(url, target); err != nil {
+// TarExtractURL downloads a tar file from a URL and extracts it to target
+func TarExtractURL(url, target string) error {
+	err := os.MkdirAll(filepath.Dir(target), 0777)
+	if err != nil {
+		return err
+	}
+	if err = Download(url, target); err != nil {
 		return err
 	}
 
@@ -222,4 +240,23 @@ func PrintComplete(message string, fmts ...interface{}) {
 func Fail(err error) {
 	fmt.Fprintf(os.Stderr, "%s: ERROR: %s\n", os.Args[0], err)
 	os.Exit(1)
+}
+
+// GetLatestVersion returns the version value at upstreamURL/latest or an error
+// if unable to do so.
+func GetLatestVersion(upstreamURL string) (uint, error) {
+	resp, err := http.Get(upstreamURL + "/latest")
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return 0, err
+	}
+	vStr := strings.Trim(string(body), "\n")
+	ver, err := strconv.ParseUint(vStr, 10, 32)
+	return uint(ver), err
 }
