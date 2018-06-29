@@ -223,7 +223,12 @@ func TarExtractURL(url, target string) error {
 		return err
 	}
 
-	return RunCommandSilent("tar", "-C", filepath.Dir(target), "-xf", target)
+	return RunCommandSilent(
+		"tar",
+		"--preserve-permissions",
+		"-C", filepath.Dir(target),
+		"-xf", target,
+	)
 }
 
 // PrintBegin prints the beginning of a task
