@@ -15,6 +15,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/clearlinux/diva/diva"
@@ -77,7 +78,11 @@ func runUCCheck(cmd *cobra.Command, args []string) {
 // and pack contents
 func UCCheck(version uint, recursive bool) (*diva.Results, error) {
 	r := &diva.Results{Name: "updatecontent"}
-	u := diva.UInfo{Ver: version, URL: conf.UpstreamURL, CacheLoc: conf.Paths.CacheLocation}
+	u := diva.UInfo{
+		Ver:      fmt.Sprint(version),
+		URL:      conf.UpstreamURL,
+		CacheLoc: conf.Paths.CacheLocation,
+	}
 	if !recursive {
 		u.MinVer = version
 	}
@@ -91,30 +96,34 @@ func UCCheck(version uint, recursive bool) (*diva.Results, error) {
 		return r, err
 	}
 
-	checkManifestHashes(r, u.Ver, u.MinVer)
-	checkFileHashes(r, u.Ver, u.MinVer)
-	checkZeroPacks(r, u.Ver, u.MinVer)
+	errs := updatecontent.CheckManifestHashes(conf, version, u.MinVer)
+	for _, e := range errs {
+		r.Add("Manifest hashes", "check manifest hashes match hashes listed in MoM", e, false)
+	}
+	if len(errs) == 0 {
+		r.Add("Manifest hashes", "check manifest hashes match hashes listed in MoM", nil, false)
+	}
+	errs = updatecontent.CheckFileHashes(conf, version, u.MinVer)
+	for _, e := range errs {
+		r.Add("File hashes", "check file hashes match hashes listed in manifests", e, false)
+	}
+	if len(errs) == 0 {
+		r.Add("File hashes", "check file hashes match hashes listed in manifests", nil, false)
+	}
+	errs = updatecontent.CheckPacks(conf, version, u.MinVer, updatecontent.CheckZeroPack)
+	for _, e := range errs {
+		r.Add("Zero Packs", "check zero pack content matches content listed in manifest", e, false)
+	}
+	if len(errs) == 0 {
+		r.Add("Zero packs", "check zero pack content matches content listed in manifest", nil, false)
+	}
+	errs = updatecontent.CheckPacks(conf, version, u.MinVer, updatecontent.CheckDeltaPacks)
+	for _, e := range errs {
+		r.Add("Delta packs", "delta pack content matches manifests", e, false)
+	}
+	if len(errs) == 0 {
+		r.Add("Delta packs", "delta pack content matches manifests", nil, false)
+	}
 
 	return r, err
-}
-
-func checkManifestHashes(r *diva.Results, version, minVer uint) {
-	name := "Manifest hashes"
-	desc := "check manifest hashes match hashes listed in MoM"
-	err := updatecontent.CheckManifestHashes(conf.Paths.CacheLocation, version, minVer)
-	r.Add(name, desc, err, false)
-}
-
-func checkFileHashes(r *diva.Results, version, minVer uint) {
-	name := "File hashes"
-	desc := "check file hashes match hashes listed in manifest"
-	err := updatecontent.CheckFileHashes(conf.Paths.CacheLocation, version, minVer)
-	r.Add(name, desc, err, false)
-}
-
-func checkZeroPacks(r *diva.Results, version, minVer uint) {
-	name := "Zero packs"
-	desc := "check zero pack content matches content listed in manifests"
-	err := updatecontent.CheckZeroPacks(conf, version, minVer)
-	r.Add(name, desc, err, false)
 }

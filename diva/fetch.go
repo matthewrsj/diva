@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -70,7 +71,12 @@ func GetUpstreamInfo(conf *config.Config, upstreamURL string, version string, re
 	u.CacheLoc = conf.Paths.CacheLocation
 
 	if !recursive {
-		u.MinVer = u.Ver
+		var mv int
+		mv, err = strconv.Atoi(u.Ver)
+		if err != nil {
+			return u, err
+		}
+		u.MinVer = uint(mv)
 	}
 
 	return u, err
@@ -140,7 +146,7 @@ func FetchUpdate(u UInfo) error {
 			continue
 		}
 		outMan := filepath.Join(baseCache, fmt.Sprint(ver), "Manifest."+mom.Files[i].Name)
-		_, err := helpers.DownloadManifest(u.URL, fmt.Sprint(ver), mom.Files[i].Name, outMan)
+		err := helpers.DownloadManifest(u.URL, fmt.Sprint(ver), mom.Files[i].Name, outMan)
 		if err != nil {
 			return err
 		}
@@ -159,7 +165,12 @@ func getAllFiles(u UInfo) (map[string]finfo, error) {
 	dlFiles := make(map[string]finfo)
 	baseCache := filepath.Join(u.CacheLoc, "update")
 	outMoM := filepath.Join(baseCache, fmt.Sprint(u.Ver), "Manifest.MoM")
-	mom, err := helpers.DownloadManifest(u.URL, u.Ver, "MoM", outMoM)
+	err := helpers.DownloadManifest(u.URL, u.Ver, "MoM", outMoM)
+	if err != nil {
+		return nil, err
+	}
+
+	mom, err := swupd.ParseManifestFile(outMoM)
 	if err != nil {
 		return nil, err
 	}
@@ -172,10 +183,16 @@ func getAllFiles(u UInfo) (map[string]finfo, error) {
 		}
 		baseCache := filepath.Join(u.CacheLoc, "update")
 		outMan := filepath.Join(baseCache, fmt.Sprint(mv), "Manifest."+mom.Files[i].Name)
-		m, err := helpers.DownloadManifest(u.URL, mv, mom.Files[i].Name, outMan)
+		err := helpers.DownloadManifest(u.URL, fmt.Sprint(mv), mom.Files[i].Name, outMan)
 		if err != nil {
 			return nil, err
 		}
+
+		m, err := swupd.ParseManifestFile(outMan)
+		if err != nil {
+			return nil, err
+		}
+
 		for _, f := range m.Files {
 			if uint(f.Version) < u.MinVer || !f.Present() {
 				continue
@@ -192,7 +209,7 @@ func getAllFiles(u UInfo) (map[string]finfo, error) {
 
 // FetchUpdateFiles downloads relevant files for u.Ver from u.URL
 func FetchUpdateFiles(u UInfo) error {
-	helpers.PrintBegin("fetching files from %s at version %d", u.URL, u.Ver)
+	helpers.PrintBegin("fetching files from %s at version %v", u.URL, u.Ver)
 	dlFiles, err := getAllFiles(u)
 	if err != nil {
 		return err
