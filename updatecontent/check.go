@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/clearlinux/diva/diva"
 	"github.com/clearlinux/diva/internal/config"
 	"github.com/clearlinux/diva/internal/helpers"
 
@@ -30,13 +31,12 @@ import (
 
 // CheckManifestHashes compares manifest hashes against the hashes listed in
 // the MoM for that version
-func CheckManifestHashes(c *config.Config, version, minVer uint) (errs []error) {
+func CheckManifestHashes(r *diva.Results, c *config.Config, version, minVer uint) error {
 	cLoc := filepath.Join(c.Paths.CacheLocation, "update")
 	momPath := filepath.Join(cLoc, fmt.Sprint(version), "Manifest.MoM")
 	MoM, err := swupd.ParseManifestFile(momPath)
 	if err != nil {
-		errs = append(errs, err)
-		return
+		return err
 	}
 	for i := range MoM.Files {
 		if uint(MoM.Files[i].Version) < minVer {
@@ -46,24 +46,22 @@ func CheckManifestHashes(c *config.Config, version, minVer uint) (errs []error) 
 			cLoc, fmt.Sprint(MoM.Files[i].Version), "Manifest."+MoM.Files[i].Name)
 		hash, err := swupd.Hashcalc(mPath)
 		if err != nil {
-			errs = append(errs, err)
-			continue
+			return err
 		}
-		if hash != MoM.Files[i].Hash {
-			err = fmt.Errorf("%s hash did not match hash listed in %s", mPath, momPath)
-			errs = append(errs, err)
-			continue
-		}
+		desc := fmt.Sprintf("Manifest.%s hash matches hash in MoM", MoM.Files[i].Name)
+		r.Ok(hash == MoM.Files[i].Hash, desc)
 	}
-	return
+
+	return nil
 }
 
-func checkBundleFileHashes(cacheLoc string, m *swupd.Manifest, minVer uint) (errs []error) {
+func checkBundleFileHashes(cacheLoc string, m *swupd.Manifest, minVer uint) ([]string, error) {
 	var wg sync.WaitGroup
 	workers := len(m.Files)
 	wg.Add(workers)
 	fCh := make(chan *swupd.File)
-	eCh := make(chan error)
+	eCh := make(chan error, workers)
+	fails := make(chan string, workers)
 
 	cLoc := filepath.Join(cacheLoc, "update")
 	for i := 0; i < workers; i++ {
@@ -80,41 +78,53 @@ func checkBundleFileHashes(cacheLoc string, m *swupd.Manifest, minVer uint) (err
 				hash, err := swupd.Hashcalc(fLoc)
 				if err != nil {
 					eCh <- err
-					continue
+					break
 				}
 				if hash != f.Hash {
-					err = fmt.Errorf("%s hash did not match hash listed in %s for %s",
-						fLoc, m.Name, f.Name)
-					eCh <- err
-					continue
+					fails <- f.Name
 				}
 			}
 		}()
 	}
 
+	var err error
 	for _, f := range m.Files {
-		fCh <- f
+		select {
+		case fCh <- f:
+		case err = <-eCh:
+			// break on first failure
+			break
+		}
 	}
 	close(fCh)
 	wg.Wait()
-	close(eCh)
+	close(fails)
 
-	for e := range eCh {
-		errs = append(errs, e)
+	if err == nil && len(eCh) > 0 {
+		err = <-eCh
 	}
 
-	return
+	chanLen := len(eCh)
+	for i := 0; i < chanLen; i++ {
+		<-eCh
+	}
+
+	var failures []string
+	for fail := range fails {
+		failures = append(failures, fail)
+	}
+
+	return failures, err
 }
 
 // CheckFileHashes checks that the downloaded file content matches the hashes
 // listed in the manifests
-func CheckFileHashes(c *config.Config, version, minVer uint) (errs []error) {
+func CheckFileHashes(r *diva.Results, c *config.Config, version, minVer uint) error {
 	cLoc := filepath.Join(c.Paths.CacheLocation, "update")
 	momPath := filepath.Join(cLoc, fmt.Sprint(version), "Manifest.MoM")
 	MoM, err := swupd.ParseManifestFile(momPath)
 	if err != nil {
-		errs = append(errs, err)
-		return
+		return err
 	}
 	var wg sync.WaitGroup
 	nworkers := len(MoM.Files)
@@ -130,16 +140,20 @@ func CheckFileHashes(c *config.Config, version, minVer uint) (errs []error) {
 					continue
 				}
 				mPath := filepath.Join(cLoc, fmt.Sprint(f.Version), "Manifest."+f.Name)
-				m, err := swupd.ParseManifestFile(mPath)
-				if err != nil {
-					errChan <- err
-				}
-				es := checkBundleFileHashes(c.Paths.CacheLocation, m, minVer)
-				for _, e := range es {
+				m, e := swupd.ParseManifestFile(mPath)
+				if e != nil {
 					errChan <- e
+					break
 				}
-				if len(es) > 0 {
-					continue
+				failures, e := checkBundleFileHashes(c.Paths.CacheLocation, m, minVer)
+				if e != nil {
+					errChan <- e
+					break
+				}
+				desc := fmt.Sprintf("file hashes for %s bundle match hashes in manifest", m.Name)
+				r.Ok(len(failures) == 0, desc)
+				if len(failures) > 0 {
+					r.Diagnostic("mismatched hashes:\n" + strings.Join(failures, "\n"))
 				}
 			}
 		}()
@@ -147,14 +161,21 @@ func CheckFileHashes(c *config.Config, version, minVer uint) (errs []error) {
 
 	for i := range MoM.Files {
 		fChan <- MoM.Files[i]
+		select {
+		case fChan <- MoM.Files[i]:
+		case err = <-errChan:
+			// break on first failure
+			break
+		}
 	}
 	close(fChan)
 	wg.Wait()
-	close(errChan)
-	for e := range errChan {
-		errs = append(errs, e)
+
+	if err == nil && len(errChan) > 0 {
+		err = <-errChan
 	}
-	return
+
+	return err
 }
 
 func checkBundleFileHashesPack(filesLoc string, m *swupd.Manifest, minVer uint) []error {
@@ -206,30 +227,27 @@ func checkBundleFileHashesPack(filesLoc string, m *swupd.Manifest, minVer uint) 
 }
 
 // CheckZeroPack validates the zero pack associated with the bundle at the present version
-func CheckZeroPack(c *config.Config, m *swupd.Manifest) (errs []error) {
+func CheckZeroPack(c *config.Config, m *swupd.Manifest) ([]string, error) {
 	tmpDir, err := ioutil.TempDir("", fmt.Sprintf("check-zero-pack-%s-%d-", m.Name, m.Header.Version))
 	if err != nil {
-		errs = append(errs, err)
-		return
+		return []string{}, err
 	}
 	defer func() {
-		if len(errs) == 0 {
-			_ = os.RemoveAll(tmpDir)
-		}
+		_ = os.RemoveAll(tmpDir)
 	}()
 
 	url := fmt.Sprintf("%s/update/%d/pack-%s-from-0.tar", c.UpstreamURL, m.Header.Version, m.Name)
 	err = helpers.TarExtractURL(url, filepath.Join(tmpDir, fmt.Sprint(m.Header.Version)))
 	if err != nil {
-		errs = append(errs, err)
-		return
+		return []string{}, err
 	}
 
+	var failures []string
 	es := checkBundleFileHashesPack(filepath.Join(tmpDir, "staged"), m, 0)
 	for _, e := range es {
-		errs = append(errs, e)
+		failures = append(failures, e.Error())
 	}
-	return
+	return failures, nil
 }
 
 func checkSingleDelta(deltaFile, fromFile, expHash string) error {
@@ -314,7 +332,7 @@ func checkDeltaPack(c *config.Config, dir string, m *swupd.Manifest) error {
 }
 
 // CheckDeltaPacks checks the delta packs for the m bundle
-func CheckDeltaPacks(c *config.Config, m *swupd.Manifest) (errs []error) {
+func CheckDeltaPacks(c *config.Config, m *swupd.Manifest) ([]string, error) {
 	vers := make(map[uint32]struct{})
 	var exists = struct{}{}
 	for _, f := range m.Files {
@@ -326,6 +344,7 @@ func CheckDeltaPacks(c *config.Config, m *swupd.Manifest) (errs []error) {
 	wg.Add(workers)
 	vCh := make(chan uint32)
 	errCh := make(chan error)
+	failCh := make(chan string)
 
 	for i := 0; i < workers; i++ {
 		go func() {
@@ -334,7 +353,7 @@ func CheckDeltaPacks(c *config.Config, m *swupd.Manifest) (errs []error) {
 				tmpDir, err := ioutil.TempDir("", fmt.Sprintf("check-delta-pack-%s-%d-", m.Name, v))
 				if err != nil {
 					errCh <- err
-					continue
+					break
 				}
 				defer func() {
 					_ = os.RemoveAll(tmpDir)
@@ -350,37 +369,48 @@ func CheckDeltaPacks(c *config.Config, m *swupd.Manifest) (errs []error) {
 
 				err = checkDeltaPack(c, tmpDir, m)
 				if err != nil {
-					errCh <- err
-					continue
+					failCh <- err.Error()
+					break
 				}
 			}
 		}()
 	}
 
+	var err error
 	for v := range vers {
-		vCh <- v
+		select {
+		case vCh <- v:
+		case err = <-errCh:
+			// break on first failure
+			break
+		}
 	}
 
 	close(vCh)
 	wg.Wait()
 	close(errCh)
+	close(failCh)
 
-	for e := range errCh {
-		errs = append(errs, e)
+	if err == nil && len(errCh) > 0 {
+		err = <-errCh
 	}
 
-	return
+	var fails []string
+	for f := range failCh {
+		fails = append(fails, f)
+	}
+
+	return fails, err
 }
 
 // CheckPacks validates the file contents of packs against manifest hashes
 // using the pack check function pc
-func CheckPacks(c *config.Config, version, minVer uint, pc func(*config.Config, *swupd.Manifest) []error) (errs []error) {
+func CheckPacks(r *diva.Results, c *config.Config, version, minVer uint, delta bool) error {
 	cLoc := filepath.Join(c.Paths.CacheLocation, "update")
 	momPath := filepath.Join(cLoc, fmt.Sprint(version), "Manifest.MoM")
 	MoM, err := swupd.ParseManifestFile(momPath)
 	if err != nil {
-		errs = append(errs, err)
-		return
+		return err
 	}
 
 	var wg sync.WaitGroup
@@ -397,31 +427,48 @@ func CheckPacks(c *config.Config, version, minVer uint, pc func(*config.Config, 
 					continue
 				}
 				mPath := filepath.Join(cLoc, fmt.Sprint(man.Version), "Manifest."+man.Name)
-				m, err := swupd.ParseManifestFile(mPath)
-				if err != nil {
-					eCh <- err
-					continue
-				}
-				es := pc(c, m)
-				for _, e := range es {
+				m, e := swupd.ParseManifestFile(mPath)
+				if e != nil {
 					eCh <- e
+					break
 				}
-				if len(es) > 0 {
-					continue
+				var failures []string
+				var desc string
+				if delta {
+					failures, e = CheckDeltaPacks(c, m)
+					desc = "delta pack content correct for " + m.Name
+				} else {
+					failures, e = CheckZeroPack(c, m)
+					desc = "zero pack content correct for " + m.Name
+				}
+
+				if e != nil {
+					eCh <- e
+					break
+				}
+				r.Ok(len(failures) == 0, desc)
+				if len(failures) > 0 {
+					r.Diagnostic("pack issues:\n" + strings.Join(failures, "\n"))
 				}
 			}
 		}()
 	}
 
 	for _, b := range MoM.Files {
-		bCh <- b
+		select {
+		case bCh <- b:
+		case err = <-eCh:
+			// break on first failure
+			break
+		}
 	}
 	close(bCh)
 	wg.Wait()
 	close(eCh)
 
-	for e := range eCh {
-		errs = append(errs, e)
+	if err == nil && len(eCh) > 0 {
+		err = <-eCh
 	}
-	return
+
+	return err
 }

@@ -17,26 +17,9 @@ package diva
 import (
 	"encoding/json"
 	"io"
-	"text/template"
+
+	"github.com/mndrix/tap-go" // tap
 )
-
-// PFS describes the pass/fail/skip status of an individual test result
-type PFS uint8
-
-// Valid values for PFS
-const (
-	Pass PFS = iota
-	Fail
-	Skip
-)
-
-// Result holds individual test status and information
-type Result struct {
-	Name        string
-	Description string
-	Status      PFS
-	Output      string
-}
 
 // Results holds the results of a test run
 type Results struct {
@@ -44,32 +27,16 @@ type Results struct {
 	Description string
 	Passed      uint
 	Failed      uint
-	Skipped     uint
-	Total       uint
-	Tests       []Result
+	*tap.T
 }
 
-const resultTemplate = `
-Test Suite:  {{.Name}}
-             {{.Description}}
-Total:       {{.Total}}
-Passed:      {{.Passed}}
-Failed:      {{.Failed}}
-Skipped:     {{.Skipped}}
-
-{{range $f := .Tests}}{{if eq .Status 1}}{{.Name}}	{{.Description}}	{{.Output}}
-{{end}}{{end}}
-`
-
-// Print the Results to the Writer provided using the resultTemplate as the
-// format.
-func (r *Results) Print(w io.Writer) error {
-	t, err := template.New("resultTemplate").Parse(resultTemplate)
-	if err != nil {
-		return err
+// NewSuite returns a new *Results object
+func NewSuite(name, desc string) *Results {
+	return &Results{
+		Name:        name,
+		Description: desc,
+		T:           tap.New(),
 	}
-
-	return t.Execute(w, r)
 }
 
 // PrintJSON prints the Results in JSON format to the Writer provided.
@@ -83,35 +50,12 @@ func (r *Results) PrintJSON(w io.Writer) error {
 	return err
 }
 
-// Add increments the appropriate counters according to err and skipped
-// arguments and adds a test the result.Tests field.
-func (r *Results) Add(name, description string, err error, skipped bool) {
-	r.Total++
-	var status PFS
-	var output string
-	switch {
-	case skipped:
-		r.Skipped++
-		status = Skip
-		output = "skipped: "
-		if err != nil {
-			output += err.Error()
-		}
-	case err == nil:
+// Ok records a test pass or fail based on the test argument
+func (r *Results) Ok(test bool, description string) {
+	if test {
 		r.Passed++
-		status = Pass
-		output = ""
-	default: // err != nil
+	} else {
 		r.Failed++
-		status = Fail
-		output = err.Error()
 	}
-
-	t := Result{
-		Name:        name,
-		Description: description,
-		Status:      status,
-		Output:      output,
-	}
-	r.Tests = append(r.Tests, t)
+	r.T.Ok(test, description)
 }

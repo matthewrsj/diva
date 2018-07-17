@@ -233,12 +233,12 @@ func TarExtractURL(url, target string) error {
 
 // PrintBegin prints the beginning of a task
 func PrintBegin(message string, fmts ...interface{}) {
-	fmt.Println(fmt.Sprintf(fmt.Sprintf("--> %s", message), fmts...))
+	fmt.Fprintln(os.Stderr, fmt.Sprintf(fmt.Sprintf("--> %s", message), fmts...))
 }
 
 // PrintComplete prints completion of a task
 func PrintComplete(message string, fmts ...interface{}) {
-	fmt.Println(fmt.Sprintf(fmt.Sprintf("    %s", message), fmts...))
+	fmt.Fprintln(os.Stderr, fmt.Sprintf(fmt.Sprintf("    %s", message), fmts...))
 }
 
 // Fail prints the error and exits the program with an error code

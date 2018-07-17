@@ -64,11 +64,6 @@ func runUCCheck(cmd *cobra.Command, args []string) {
 		helpers.Fail(err)
 	}
 
-	err = results.Print(os.Stdout)
-	if err != nil {
-		helpers.Fail(err)
-	}
-
 	if results.Failed > 0 {
 		os.Exit(1)
 	}
@@ -77,7 +72,7 @@ func runUCCheck(cmd *cobra.Command, args []string) {
 // UCCheck runs update content checks against manifests and their related file
 // and pack contents
 func UCCheck(version uint, recursive bool) (*diva.Results, error) {
-	r := &diva.Results{Name: "updatecontent"}
+	r := diva.NewSuite("updatecontent", "check update content for release")
 	u := diva.UInfo{
 		Ver:      fmt.Sprint(version),
 		URL:      conf.UpstreamURL,
@@ -96,34 +91,22 @@ func UCCheck(version uint, recursive bool) (*diva.Results, error) {
 		return r, err
 	}
 
-	errs := updatecontent.CheckManifestHashes(conf, version, u.MinVer)
-	for _, e := range errs {
-		r.Add("Manifest hashes", "check manifest hashes match hashes listed in MoM", e, false)
+	r.Header(0)
+	err = updatecontent.CheckManifestHashes(r, conf, version, u.MinVer)
+	if err != nil {
+		return r, err
 	}
-	if len(errs) == 0 {
-		r.Add("Manifest hashes", "check manifest hashes match hashes listed in MoM", nil, false)
+	err = updatecontent.CheckFileHashes(r, conf, version, u.MinVer)
+	if err != nil {
+		return r, err
 	}
-	errs = updatecontent.CheckFileHashes(conf, version, u.MinVer)
-	for _, e := range errs {
-		r.Add("File hashes", "check file hashes match hashes listed in manifests", e, false)
+	err = updatecontent.CheckPacks(r, conf, version, u.MinVer, true)
+	if err != nil {
+		return r, err
 	}
-	if len(errs) == 0 {
-		r.Add("File hashes", "check file hashes match hashes listed in manifests", nil, false)
+	err = updatecontent.CheckPacks(r, conf, version, u.MinVer, false)
+	if err != nil {
+		return r, err
 	}
-	errs = updatecontent.CheckPacks(conf, version, u.MinVer, updatecontent.CheckZeroPack)
-	for _, e := range errs {
-		r.Add("Zero Packs", "check zero pack content matches content listed in manifest", e, false)
-	}
-	if len(errs) == 0 {
-		r.Add("Zero packs", "check zero pack content matches content listed in manifest", nil, false)
-	}
-	errs = updatecontent.CheckPacks(conf, version, u.MinVer, updatecontent.CheckDeltaPacks)
-	for _, e := range errs {
-		r.Add("Delta packs", "delta pack content matches manifests", e, false)
-	}
-	if len(errs) == 0 {
-		r.Add("Delta packs", "delta pack content matches manifests", nil, false)
-	}
-
 	return r, err
 }

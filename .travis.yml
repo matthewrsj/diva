@@ -15,6 +15,7 @@ before_install:
     - go get -u github.com/clearlinux/mixer-tools/swupd
     - go get -u github.com/gomodule/redigo/redis
     - go get -u github.com/rafaeljusto/redigomock
+    - go get -u github.com/mndrix/tap-go
     - gometalinter.v2 --install
 
 script:

@@ -62,12 +62,6 @@ func runPipCheck(cmd *cobra.Command, args []string) {
 	}
 
 	results := PipCheck(p)
-
-	err := results.Print(os.Stdout)
-	if err != nil {
-		helpers.Fail(err)
-	}
-
 	if results.Failed > 0 {
 		os.Exit(1)
 	}
@@ -75,10 +69,14 @@ func runPipCheck(cmd *cobra.Command, args []string) {
 
 // PipCheck runs 'pip check' in a chroot at path
 func PipCheck(path string) *diva.Results {
-	r := &diva.Results{Name: "pipcheck"}
 	name := "pipcheck"
 	desc := "run pip check in full build root to check for missing python requirements"
+	r := diva.NewSuite(name, desc)
+	r.Header(0)
 	err := helpers.RunCommandSilent("chroot", path, "pip", "check")
-	r.Add(name, desc, err, false)
+	r.Ok(err == nil, desc)
+	if err != nil {
+		r.Diagnostic(err.Error())
+	}
 	return r
 }
