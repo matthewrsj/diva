@@ -15,10 +15,17 @@
 package diva
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+
 	"github.com/clearlinux/diva/download"
 	"github.com/clearlinux/diva/internal/config"
 	"github.com/clearlinux/diva/internal/helpers"
 	"github.com/clearlinux/diva/pkginfo"
+	"github.com/clearlinux/mixer-tools/swupd"
 )
 
 // DownloadRepo downloads the RPM repo to the local cache location
@@ -124,6 +131,7 @@ func FetchUpdate(conf *config.Config, u *config.UInfo) {
 	mInfo, err := pkginfo.NewManifestInfo(conf, u)
 	helpers.FailIfErr(err)
 	DownloadUpdate(&mInfo)
+	DownloadBundleInfoFiles(conf, u)
 	ImportUpdate(&mInfo)
 }
 
@@ -134,4 +142,117 @@ func FetchUpdateFiles(conf *config.Config, u *config.UInfo) {
 	helpers.FailIfErr(err)
 	DownloadUpdate(&mInfo)
 	DownloadUpdateFiles(&mInfo)
+}
+
+// FetchUpdateAll downloads both manifests and relevant manifest files, then
+// TODO: stores them to the database
+func FetchUpdateAll(conf *config.Config, u *config.UInfo) {
+	mInfo, err := pkginfo.NewManifestInfo(conf, u)
+	helpers.FailIfErr(err)
+	DownloadUpdateAll(&mInfo)
+}
+
+const idxBundleName = "os-core-update-index"
+const bInfoDir = "/usr/share/clear/allbundles/"
+
+func bundleInfoWorker(
+	wg *sync.WaitGroup,
+	u *config.UInfo,
+	bInfoCache string,
+	fChan <-chan *swupd.File,
+	errChan chan<- error,
+) {
+	defer wg.Done()
+	var err error
+	for f := range fChan {
+		ver := uint(f.Version)
+		if ver < u.MinVer {
+			continue
+		}
+
+		if f.Type != swupd.TypeFile {
+			continue
+		}
+
+		if !strings.HasPrefix(f.Name, bInfoDir) {
+			continue
+		}
+
+		outBInfo := filepath.Join(bInfoCache, filepath.Base(f.Name))
+		if _, err = os.Stat(outBInfo); err == nil {
+			continue
+		}
+		url := fmt.Sprintf("%s/update/%d/files/%s.tar", u.URL, ver, f.Hash)
+		err = helpers.TarExtractURL(url, outBInfo)
+		if err != nil {
+			errChan <- err
+			continue
+		}
+
+		// remove the tar file
+		err = os.Remove(outBInfo)
+		if err != nil {
+			errChan <- err
+			continue
+		}
+
+		// rename the extracted hash file to outBInfo
+		from := filepath.Join(bInfoCache, f.Hash.String())
+		err = helpers.RenameIfNotExists(from, outBInfo)
+		if err != nil {
+			errChan <- err
+			continue
+		}
+	}
+}
+
+// DownloadBundleInfoFiles downloads all *-info files for u.Ver from u.URL
+func DownloadBundleInfoFiles(c *config.Config, u *config.UInfo) {
+	helpers.PrintBegin("fetching bundle-info files from %s at version %v", c.UpstreamURL, u.Ver)
+	verCache := filepath.Join(c.Paths.CacheLocation, "update", u.Ver)
+	outMan := filepath.Join(verCache, "Manifest."+idxBundleName)
+	err := download.GetManifest(c.UpstreamURL, u.Ver, idxBundleName, outMan)
+	helpers.FailIfErr(err)
+
+	idxMan, err := swupd.ParseManifestFile(outMan)
+	helpers.FailIfErr(err)
+
+	var wg sync.WaitGroup
+	workers := 8
+	wg.Add(workers)
+	fChan := make(chan *swupd.File)
+	errChan := make(chan error)
+
+	bInfoCache := filepath.Join(verCache, "bundles")
+	err = os.MkdirAll(bInfoCache, 0777)
+	if !os.IsNotExist(err) {
+		helpers.FailIfErr(err)
+	}
+
+	u.URL = c.UpstreamURL
+	for i := 0; i < workers; i++ {
+		go bundleInfoWorker(&wg, u, bInfoCache, fChan, errChan)
+	}
+
+	for _, f := range idxMan.Files {
+		fChan <- f
+	}
+	close(fChan)
+
+	errs := []error{}
+	go func() {
+		for e := range errChan {
+			errs = append(errs, e)
+		}
+	}()
+	wg.Wait()
+	close(errChan)
+
+	if len(errs) > 0 {
+		err := fmt.Errorf("errors downloading %d bundle-info files", len(errs))
+		helpers.PrintComplete(err.Error())
+		helpers.FailIfErr(err)
+	}
+
+	helpers.PrintComplete("bundle-info files cached at %s", bInfoCache)
 }

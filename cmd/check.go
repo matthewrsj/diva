@@ -32,4 +32,5 @@ func init() {
 	checkCmd.AddCommand(verifyBundlesCmd)
 	checkCmd.AddCommand(rpmFileConflictsCmd)
 	checkCmd.AddCommand(sigCmd)
+	checkCmd.AddCommand(verifyManCmd)
 }

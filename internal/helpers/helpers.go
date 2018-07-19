@@ -99,10 +99,11 @@ func Download(url, filename string, overwrite bool) error {
 	}
 
 	// move tempfile to final now that everything else has succeeded
-	return renameIfNotExists(tmpFile, filename)
+	return RenameIfNotExists(tmpFile, filename)
 }
 
-func renameIfNotExists(src, dst string) error {
+// RenameIfNotExists moves src to dst if dst does not exist.
+func RenameIfNotExists(src, dst string) error {
 	err := os.Link(src, dst)
 	if err != nil {
 		if !os.IsExist(err) {

@@ -137,7 +137,7 @@ func DefaultConf() Config {
 			filepath.Join(ws, "mix"),
 		},
 		pathConfig{
-			filepath.Join(ws, "projects/clr-bundles"),
+			filepath.Join(ws, "data/clr-bundles"),
 			filepath.Join(ws, "repo"),
 			filepath.Join(ws, "data"),
 		},
