@@ -23,7 +23,6 @@ import (
 
 	"github.com/clearlinux/diva/bundle"
 	"github.com/clearlinux/diva/diva"
-	"github.com/clearlinux/diva/internal/config"
 	"github.com/clearlinux/diva/internal/helpers"
 	"github.com/clearlinux/diva/pkginfo"
 	"github.com/spf13/cobra"
@@ -39,16 +38,7 @@ type bundleCmdFlags struct {
 // flags passed in as args
 var bundleFlags bundleCmdFlags
 
-// config object used by GetUpstreamRepoFiles and called functions
-var c *config.Config
-
 func init() {
-	var err error
-	c, err = config.ReadConfig("")
-	if err != nil {
-		helpers.Fail(err)
-	}
-
 	checkCmd.AddCommand(verifyBundlesCmd)
 	verifyBundlesCmd.Flags().StringVarP(&bundleFlags.repoURL, "repourl", "u", "", "Url to repo")
 	verifyBundlesCmd.Flags().StringVarP(&bundleFlags.repoName, "reponame", "n", "clear", "Name of repo")
@@ -85,7 +75,7 @@ func runVerifyBundle(cmd *cobra.Command, args []string) {
 		helpers.Fail(err)
 	}
 
-	err = diva.GetLatestBundles(c, "")
+	err = diva.GetLatestBundles(conf, "")
 	if err != nil {
 		helpers.Fail(err)
 	}
@@ -119,10 +109,10 @@ func checkAndGetBundleDefinitions(result *diva.Results) (bundle.Set, error) {
 	var err error
 
 	if bundleFlags.bundle == "" {
-		bundles, err = bundle.GetAll(c.Paths.BundleDefsRepo)
+		bundles, err = bundle.GetAll(conf.Paths.BundleDefsRepo)
 	} else {
 		var singleBundle *bundle.Definition
-		singleBundle, err = bundle.GetDefinition(bundleFlags.bundle, c.Paths.BundleDefsRepo)
+		singleBundle, err = bundle.GetDefinition(bundleFlags.bundle, conf.Paths.BundleDefsRepo)
 		if singleBundle != nil {
 			bundles[singleBundle.Name] = singleBundle
 		}
@@ -170,7 +160,7 @@ func checkIfPundleDeletesExist(result *diva.Results) error {
 	var err error
 
 	output, err := helpers.RunCommandOutput(
-		"git", "-C", c.Paths.BundleDefsRepo, "diff", "latest..HEAD", "packages",
+		"git", "-C", conf.Paths.BundleDefsRepo, "diff", "latest..HEAD", "packages",
 	)
 	if err != nil {
 		return err
