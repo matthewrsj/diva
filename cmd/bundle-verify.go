@@ -82,6 +82,7 @@ func runVerifyBundle(cmd *cobra.Command, args []string) {
 
 	checkIncludeLoops(result, &bundleInfo)
 	checkBundleDefinitionsComplete(result, &bundleInfo)
+	checkBundleName(result, &bundleInfo)
 	checkBundleHeaderTitleMatchesFile(result, &bundleInfo)
 	checkBundleRPMs(result, &bundleInfo, &repo)
 
@@ -144,6 +145,25 @@ func checkBundleDefinitionsComplete(result *diva.Results, bundleInfo *pkginfo.Bu
 	result.Ok(len(failures) == 0, "all bundle definitions complete")
 	if len(failures) > 0 {
 		result.Diagnostic("Incomplete bundles: \n" + strings.Join(failures, "\n"))
+	}
+}
+
+var validBundleNameRegex = regexp.MustCompile(`^[A-Za-z0-9-_]+$`)
+
+// checkBundleName validates all bundle names match the valid pattern and do
+// not conflict with the MoM or full reserved names.
+func checkBundleName(result *diva.Results, bundleInfo *pkginfo.BundleInfo) {
+	var failures []string
+	for _, bundle := range bundleInfo.BundleDefinitions {
+		n := bundle.Name
+		if !validBundleNameRegex.MatchString(n) || n == "MoM" || n == "full" {
+			failures = append(failures, n)
+		}
+	}
+
+	result.Ok(len(failures) == 0, "bundle names are valid")
+	if len(failures) > 0 {
+		result.Diagnostic("invalid bundle names:\n" + strings.Join(failures, "\n"))
 	}
 }
 
